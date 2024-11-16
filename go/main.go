@@ -51,6 +51,8 @@ var (
 	jiaJWTSigningKey *ecdsa.PublicKey
 
 	postIsuConditionTargetBaseURL string // JIAへのactivate時に登録する，ISUがconditionを送る先のURL
+
+	jiaUserIdCache = make(map[string]interface{})
 )
 
 type Config struct {
@@ -279,6 +281,11 @@ func getUserIDFromSession(c echo.Context) (string, int, error) {
 	}
 
 	jiaUserID := _jiaUserID.(string)
+
+	if _, ok := jiaUserIdCache[jiaUserID]; ok {
+		return jiaUserID, 0, nil
+	}
+
 	var count int
 
 	err = db.Get(&count, "SELECT COUNT(*) FROM `user` WHERE `jia_user_id` = ?",
@@ -290,6 +297,8 @@ func getUserIDFromSession(c echo.Context) (string, int, error) {
 	if count == 0 {
 		return "", http.StatusUnauthorized, fmt.Errorf("not found: user")
 	}
+
+	jiaUserIdCache[jiaUserID] = struct{}{}
 
 	return jiaUserID, 0, nil
 }
@@ -309,6 +318,7 @@ func getJIAServiceURL(tx *sqlx.Tx) string {
 // POST /initialize
 // サービスを初期化
 func postInitialize(c echo.Context) error {
+	jiaUserIdCache = make(map[string]interface{})
 	var request InitializeRequest
 	err := c.Bind(&request)
 	if err != nil {
