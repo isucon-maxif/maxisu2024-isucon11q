@@ -54,6 +54,7 @@ var (
 	postIsuConditionTargetBaseURL string // JIAへのactivate時に登録する，ISUがconditionを送る先のURL
 
 	jiaUserIdCache = make(map[string]interface{})
+	conditionQueue = make(chan PostIsuConditionRequestQueue, 1000)
 	jiaServiceURL  = defaultJIAServiceURL
 	trendCache     = cache.NewWriteHeavyCacheExpired[int, []TrendResponse]()
 )
@@ -171,6 +172,14 @@ type PostIsuConditionRequest struct {
 	Timestamp int64  `json:"timestamp"`
 }
 
+type PostIsuConditionRequestQueue struct {
+	JIAIsuUUID string `json:"jia_isu_uuid"`
+	IsSitting  bool   `json:"is_sitting"`
+	Condition  string `json:"condition"`
+	Message    string `json:"message"`
+	Timestamp  int64  `json:"timestamp"`
+}
+
 type JIAServiceRequest struct {
 	TargetBaseURL string `json:"target_base_url"`
 	IsuUUID       string `json:"isu_uuid"`
@@ -260,6 +269,8 @@ func main() {
 		e.Logger.Fatalf("missing: POST_ISUCONDITION_TARGET_BASE_URL")
 		return
 	}
+
+	go startConditionWorker()
 
 	serverPort := fmt.Sprintf(":%v", getEnv("SERVER_APP_PORT", "3000"))
 	e.Logger.Fatal(e.Start(serverPort))
@@ -1175,7 +1186,7 @@ func getTrend(c echo.Context) error {
 			})
 	}
 
-	trendCache.Set(1, res, time.Millisecond*700)
+	trendCache.Set(1, res, time.Millisecond*500)
 	return c.JSON(http.StatusOK, res)
 }
 
@@ -1202,54 +1213,82 @@ func postIsuCondition(c echo.Context) error {
 		return c.String(http.StatusBadRequest, "bad request body")
 	}
 
-	tx, err := db.Beginx()
-	if err != nil {
-		c.Logger().Errorf("db error: %v", err)
-		return c.NoContent(http.StatusInternalServerError)
-	}
-	defer tx.Rollback()
-
-	var count int
-	err = tx.Get(&count, "SELECT COUNT(*) FROM `isu` WHERE `jia_isu_uuid` = ?", jiaIsuUUID)
-	if err != nil {
-		c.Logger().Errorf("db error: %v", err)
-		return c.NoContent(http.StatusInternalServerError)
-	}
-	if count == 0 {
-		return c.String(http.StatusNotFound, "not found: isu")
-	}
-
-	values := []interface{}{}
-
 	for _, cond := range req {
 		if !isValidConditionFormat(cond.Condition) {
 			return c.String(http.StatusBadRequest, "bad request body")
 		}
-
-		timestamp := time.Unix(cond.Timestamp, 0)
-		values = append(values, jiaIsuUUID, timestamp, cond.IsSitting, cond.Condition, cond.Message)
+		conditionQueue <- PostIsuConditionRequestQueue{
+			JIAIsuUUID: jiaIsuUUID,
+			Timestamp:  cond.Timestamp,
+			IsSitting:  cond.IsSitting,
+			Condition:  cond.Condition,
+			Message:    cond.Message,
+		}
 	}
 
-	// bulk insert
-	// NOTE: `len(req)` がデカい場合にはバルクインサートを複数回に分けて処理でもいいかもしれない
-	// NOTE: 遅延は 1s まで許される
+	return c.NoContent(http.StatusAccepted)
+}
+
+func startConditionWorker() {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			processConditionQueue()
+		}
+	}
+}
+
+func processConditionQueue() {
+	var conditions []PostIsuConditionRequestQueue
+	for {
+		select {
+		case cond := <-conditionQueue:
+			conditions = append(conditions, cond)
+			if len(conditions) >= 100 {
+				insertConditions(conditions)
+				conditions = nil
+			}
+		default:
+			if len(conditions) > 0 {
+				insertConditions(conditions)
+			}
+			return
+		}
+	}
+}
+
+func insertConditions(conditions []PostIsuConditionRequestQueue) {
+	tx, err := db.Beginx()
+	if err != nil {
+		log.Printf("db error: %v", err)
+		return
+	}
+	defer tx.Rollback()
+
+	values := []interface{}{}
+	for _, cond := range conditions {
+		timestamp := time.Unix(cond.Timestamp, 0)
+		values = append(values, cond.JIAIsuUUID, timestamp, cond.IsSitting, cond.Condition, cond.Message)
+	}
+
 	query := "INSERT INTO `isu_condition`" +
 		"	(`jia_isu_uuid`, `timestamp`, `is_sitting`, `condition`, `message`)" +
-		"VALUES" + generatePlaceholders(len(req), 5)
+		"VALUES" + generatePlaceholders(len(conditions), 5)
 
 	_, err = tx.Exec(query, values...)
 	if err != nil {
-		c.Logger().Errorf("db error: %v", err)
-		return c.NoContent(http.StatusInternalServerError)
+		log.Printf("db error: %v", err)
+		return
 	}
 
 	err = tx.Commit()
 	if err != nil {
-		c.Logger().Errorf("db error: %v", err)
-		return c.NoContent(http.StatusInternalServerError)
+		log.Printf("db error: %v", err)
+		return
 	}
-
-	return c.NoContent(http.StatusAccepted)
 }
 
 func generatePlaceholders(rows, col int) string {
