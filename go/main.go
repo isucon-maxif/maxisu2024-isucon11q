@@ -469,23 +469,41 @@ func getIsuList(c echo.Context) error {
 		return c.NoContent(http.StatusInternalServerError)
 	}
 
-	responseList := []GetIsuListResponse{}
+	// isu_condition を一括取得
+	isuUUIDs := make([]string, 0, len(isuList))
 	for _, isu := range isuList {
-		var lastCondition IsuCondition
-		foundLastCondition := true
-		err = tx.Get(&lastCondition, "SELECT * FROM `isu_condition` WHERE `jia_isu_uuid` = ? ORDER BY `timestamp` DESC LIMIT 1",
-			isu.JIAIsuUUID)
+		isuUUIDs = append(isuUUIDs, isu.JIAIsuUUID)
+	}
+
+	IsuConditionMap := make(map[string]IsuCondition)
+	if len(isuUUIDs) > 0 {
+		conditions := []IsuCondition{}
+		query, args, err := sqlx.In("SELECT * FROM `isu_condition` WHERE `jia_isu_uuid` IN (?) ORDER BY `timestamp` DESC",
+			isuUUIDs)
 		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				foundLastCondition = false
-			} else {
-				c.Logger().Errorf("db error: %v", err)
-				return c.NoContent(http.StatusInternalServerError)
-			}
+			c.Logger().Errorf("db error: %v", err)
+			return c.NoContent(http.StatusInternalServerError)
+		}
+		query = tx.Rebind(query)
+
+		err = tx.Select(&conditions, query, args...)
+		if err != nil {
+			c.Logger().Errorf("db error: %v", err)
+			return c.NoContent(http.StatusInternalServerError)
 		}
 
+		for _, condition := range conditions {
+			if _, exists := IsuConditionMap[condition.JIAIsuUUID]; !exists {
+				IsuConditionMap[condition.JIAIsuUUID] = condition
+			}
+		}
+	}
+
+	// Make response
+	responseList := []GetIsuListResponse{}
+	for _, isu := range isuList {
 		var formattedCondition *GetIsuConditionResponse
-		if foundLastCondition {
+		if lastCondition, exists := IsuConditionMap[isu.JIAIsuUUID]; exists {
 			conditionLevel, err := calculateConditionLevel(lastCondition.Condition)
 			if err != nil {
 				c.Logger().Error(err)
@@ -508,7 +526,8 @@ func getIsuList(c echo.Context) error {
 			JIAIsuUUID:         isu.JIAIsuUUID,
 			Name:               isu.Name,
 			Character:          isu.Character,
-			LatestIsuCondition: formattedCondition}
+			LatestIsuCondition: formattedCondition,
+		}
 		responseList = append(responseList, res)
 	}
 
@@ -804,7 +823,8 @@ func generateIsuGraphResponse(tx *sqlx.Tx, jiaIsuUUID string, graphDate time.Tim
 						JIAIsuUUID:          jiaIsuUUID,
 						StartAt:             startTimeInThisHour,
 						Data:                data,
-						ConditionTimestamps: timestampsInThisHour})
+						ConditionTimestamps: timestampsInThisHour,
+					})
 			}
 
 			startTimeInThisHour = truncatedConditionTime
@@ -826,7 +846,8 @@ func generateIsuGraphResponse(tx *sqlx.Tx, jiaIsuUUID string, graphDate time.Tim
 				JIAIsuUUID:          jiaIsuUUID,
 				StartAt:             startTimeInThisHour,
 				Data:                data,
-				ConditionTimestamps: timestampsInThisHour})
+				ConditionTimestamps: timestampsInThisHour,
+			})
 	}
 
 	endTime := graphDate.Add(time.Hour * 24)
@@ -1002,8 +1023,8 @@ func getIsuConditions(c echo.Context) error {
 
 // ISUのコンディションをDBから取得
 func getIsuConditionsFromDB(db *sqlx.DB, jiaIsuUUID string, endTime time.Time, conditionLevel map[string]interface{}, startTime time.Time,
-	limit int, isuName string) ([]*GetIsuConditionResponse, error) {
-
+	limit int, isuName string,
+) ([]*GetIsuConditionResponse, error) {
 	conditions := []IsuCondition{}
 	var err error
 
@@ -1225,7 +1246,6 @@ func postIsuCondition(c echo.Context) error {
 
 // ISUのコンディションの文字列がcsv形式になっているか検証
 func isValidConditionFormat(conditionStr string) bool {
-
 	keys := []string{"is_dirty=", "is_overweight=", "is_broken="}
 	const valueTrue = "true"
 	const valueFalse = "false"
