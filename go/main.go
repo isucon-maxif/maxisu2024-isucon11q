@@ -1237,10 +1237,13 @@ func postIsuCondition(c echo.Context) error {
 	}
 
 	// bulk insert
+	// NOTE: `len(req)` がデカい場合にはバルクインサートを複数回に分けて処理でもいいかもしれない
+	// NOTE: 遅延は 1s まで許される
 	query := "INSERT INTO `isu_condition`" +
 		"	(`jia_isu_uuid`, `timestamp`, `is_sitting`, `condition`, `message`)" +
-		"VALUES (:values)"
-	_, err = tx.NamedExec(query, values)
+		"VALUES" + generatePlaceholders(len(req), 5)
+
+	_, err = tx.Exec(query, values...)
 	if err != nil {
 		c.Logger().Errorf("db error: %v", err)
 		return c.NoContent(http.StatusInternalServerError)
@@ -1253,6 +1256,15 @@ func postIsuCondition(c echo.Context) error {
 	}
 
 	return c.NoContent(http.StatusAccepted)
+}
+
+func generatePlaceholders(rows, col int) string {
+	placeholders := make([]string, rows)
+	for i := 0; i < rows; i++ {
+		row := "(" + strings.Repeat("?, ", col-1) + "?)"
+		placeholders[i] = row
+	}
+	return strings.Join(placeholders, ", ")
 }
 
 // ISUのコンディションの文字列がcsv形式になっているか検証
