@@ -1225,23 +1225,25 @@ func postIsuCondition(c echo.Context) error {
 		return c.String(http.StatusNotFound, "not found: isu")
 	}
 
-	for _, cond := range req {
-		timestamp := time.Unix(cond.Timestamp, 0)
+	values := []interface{}{}
 
+	for _, cond := range req {
 		if !isValidConditionFormat(cond.Condition) {
 			return c.String(http.StatusBadRequest, "bad request body")
 		}
 
-		_, err = tx.Exec(
-			"INSERT INTO `isu_condition`"+
-				"	(`jia_isu_uuid`, `timestamp`, `is_sitting`, `condition`, `message`)"+
-				"	VALUES (?, ?, ?, ?, ?)",
-			jiaIsuUUID, timestamp, cond.IsSitting, cond.Condition, cond.Message)
-		if err != nil {
-			c.Logger().Errorf("db error: %v", err)
-			return c.NoContent(http.StatusInternalServerError)
-		}
+		timestamp := time.Unix(cond.Timestamp, 0)
+		values = append(values, jiaIsuUUID, timestamp, cond.IsSitting, cond.Condition, cond.Message)
+	}
 
+	// bulk insert
+	query := "INSERT INTO `isu_condition`" +
+		"	(`jia_isu_uuid`, `timestamp`, `is_sitting`, `condition`, `message`)" +
+		"VALUES (:values)"
+	_, err = tx.NamedExec(query, values)
+	if err != nil {
+		c.Logger().Errorf("db error: %v", err)
+		return c.NoContent(http.StatusInternalServerError)
 	}
 
 	err = tx.Commit()
