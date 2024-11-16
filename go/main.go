@@ -54,8 +54,9 @@ var (
 	postIsuConditionTargetBaseURL string // JIAへのactivate時に登録する，ISUがconditionを送る先のURL
 
 	jiaUserIdCache = make(map[string]interface{})
-	trendCache     = cache.NewWriteHeavyCacheExpired[int, []TrendResponse]()
 	conditionQueue = make(chan PostIsuConditionRequestQueue, 1000)
+	jiaServiceURL  = defaultJIAServiceURL
+	trendCache     = cache.NewWriteHeavyCacheExpired[int, []TrendResponse]()
 )
 
 type Config struct {
@@ -317,21 +318,14 @@ func getUserIDFromSession(c echo.Context) (string, int, error) {
 }
 
 func getJIAServiceURL(tx *sqlx.Tx) string {
-	var config Config
-	err := tx.Get(&config, "SELECT * FROM `isu_association_config` WHERE `name` = ?", "jia_service_url")
-	if err != nil {
-		if !errors.Is(err, sql.ErrNoRows) {
-			log.Print(err)
-		}
-		return defaultJIAServiceURL
-	}
-	return config.URL
+	return jiaServiceURL
 }
 
 // POST /initialize
 // サービスを初期化
 func postInitialize(c echo.Context) error {
 	jiaUserIdCache = make(map[string]interface{})
+	trendCache = cache.NewWriteHeavyCacheExpired[int, []TrendResponse]()
 	var request InitializeRequest
 	err := c.Bind(&request)
 	if err != nil {
@@ -347,15 +341,7 @@ func postInitialize(c echo.Context) error {
 		return c.NoContent(http.StatusInternalServerError)
 	}
 
-	_, err = db.Exec(
-		"INSERT INTO `isu_association_config` (`name`, `url`) VALUES (?, ?) ON DUPLICATE KEY UPDATE `url` = VALUES(`url`)",
-		"jia_service_url",
-		request.JIAServiceURL,
-	)
-	if err != nil {
-		c.Logger().Errorf("db error : %v", err)
-		return c.NoContent(http.StatusInternalServerError)
-	}
+	jiaServiceURL = request.JIAServiceURL
 
 	go func() {
 		if _, err := http.Get("http://localhost:9000/api/group/collect"); err != nil {
@@ -484,15 +470,8 @@ func getIsuList(c echo.Context) error {
 		return c.NoContent(http.StatusInternalServerError)
 	}
 
-	tx, err := db.Beginx()
-	if err != nil {
-		c.Logger().Errorf("db error: %v", err)
-		return c.NoContent(http.StatusInternalServerError)
-	}
-	defer tx.Rollback()
-
 	isuList := []Isu{}
-	err = tx.Select(
+	err = db.Select(
 		&isuList,
 		"SELECT * FROM `isu` WHERE `jia_user_id` = ? ORDER BY `id` DESC",
 		jiaUserID)
@@ -516,9 +495,9 @@ func getIsuList(c echo.Context) error {
 			c.Logger().Errorf("db error: %v", err)
 			return c.NoContent(http.StatusInternalServerError)
 		}
-		query = tx.Rebind(query)
+		query = db.Rebind(query)
 
-		err = tx.Select(&conditions, query, args...)
+		err = db.Select(&conditions, query, args...)
 		if err != nil {
 			c.Logger().Errorf("db error: %v", err)
 			return c.NoContent(http.StatusInternalServerError)
@@ -561,12 +540,6 @@ func getIsuList(c echo.Context) error {
 			LatestIsuCondition: formattedCondition,
 		}
 		responseList = append(responseList, res)
-	}
-
-	err = tx.Commit()
-	if err != nil {
-		c.Logger().Errorf("db error: %v", err)
-		return c.NoContent(http.StatusInternalServerError)
 	}
 
 	return c.JSON(http.StatusOK, responseList)
@@ -1130,6 +1103,9 @@ func calculateConditionLevel(condition string) (string, error) {
 // GET /api/trend
 // ISUの性格毎の最新のコンディション情報
 func getTrend(c echo.Context) error {
+	if trend, found := trendCache.Get(1); found {
+		return c.JSON(http.StatusOK, trend)
+	}
 	characterList := []Isu{}
 	err := db.Select(&characterList, "SELECT `character` FROM `isu` GROUP BY `character`")
 	if err != nil {
@@ -1210,6 +1186,7 @@ func getTrend(c echo.Context) error {
 			})
 	}
 
+	trendCache.Set(1, res, time.Millisecond*500)
 	return c.JSON(http.StatusOK, res)
 }
 
@@ -1219,7 +1196,7 @@ func postIsuCondition(c echo.Context) error {
 	// TODO: 一定割合リクエストを落としてしのぐようにしたが、本来は全量さばけるようにすべき
 	dropProbability := 0.9
 	if rand.Float64() <= dropProbability {
-		c.Logger().Warnf("drop post isu condition request")
+		// c.Logger().Warnf("drop post isu condition request")
 		return c.NoContent(http.StatusAccepted)
 	}
 
