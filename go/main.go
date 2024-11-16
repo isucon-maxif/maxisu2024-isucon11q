@@ -1106,26 +1106,23 @@ func getTrend(c echo.Context) error {
 	if trend, found := trendCache.Get(1); found {
 		return c.JSON(http.StatusOK, trend)
 	}
-	characterList := []Isu{}
-	err := db.Select(&characterList, "SELECT `character` FROM `isu` GROUP BY `character`")
+
+	allIsuList := []Isu{}
+	err := db.Select(&allIsuList, "SELECT * FROM `isu`")
 	if err != nil {
 		c.Logger().Errorf("db error: %v", err)
 		return c.NoContent(http.StatusInternalServerError)
 	}
 
+	// character <-> isu
+	characterToIsuMap := make(map[string][]Isu)
+	for _, isu := range allIsuList {
+		characterToIsuMap[isu.Character] = append(characterToIsuMap[isu.Character], isu)
+	}
+
 	res := []TrendResponse{}
 
-	for _, character := range characterList {
-		isuList := []Isu{}
-		err = db.Select(&isuList,
-			"SELECT * FROM `isu` WHERE `character` = ?",
-			character.Character,
-		)
-		if err != nil {
-			c.Logger().Errorf("db error: %v", err)
-			return c.NoContent(http.StatusInternalServerError)
-		}
-
+	for character, isuList := range characterToIsuMap {
 		characterInfoIsuConditions := []*TrendCondition{}
 		characterWarningIsuConditions := []*TrendCondition{}
 		characterCriticalIsuConditions := []*TrendCondition{}
@@ -1179,7 +1176,7 @@ func getTrend(c echo.Context) error {
 		})
 		res = append(res,
 			TrendResponse{
-				Character: character.Character,
+				Character: character,
 				Info:      characterInfoIsuConditions,
 				Warning:   characterWarningIsuConditions,
 				Critical:  characterCriticalIsuConditions,
