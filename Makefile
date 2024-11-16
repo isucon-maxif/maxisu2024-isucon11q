@@ -15,7 +15,7 @@ MYSQL_CONF:=/etc/mysql
 APP:=/home/isucon/webapp/go
 APP_BINARY:=isucondition
 
-SERVICE:=isucondition-go.service
+SERVICE:=isucondition.go.service
 
 PPROF_EXEC_PORT:=6060
 PPROF_WEBUI_PORT:=1080
