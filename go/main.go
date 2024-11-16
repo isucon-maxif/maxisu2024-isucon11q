@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/catatsuy/cache"
 	"github.com/dgrijalva/jwt-go"
 	"github.com/go-sql-driver/mysql"
 	"github.com/gorilla/sessions"
@@ -53,6 +54,7 @@ var (
 	postIsuConditionTargetBaseURL string // JIAへのactivate時に登録する，ISUがconditionを送る先のURL
 
 	jiaUserIdCache = make(map[string]interface{})
+	trendCache     = cache.NewWriteHeavyCacheExpired[int, []TrendResponse]()
 )
 
 type Config struct {
@@ -319,6 +321,7 @@ func getJIAServiceURL(tx *sqlx.Tx) string {
 // サービスを初期化
 func postInitialize(c echo.Context) error {
 	jiaUserIdCache = make(map[string]interface{})
+	trendCache = cache.NewWriteHeavyCacheExpired[int, []TrendResponse]()
 	var request InitializeRequest
 	err := c.Bind(&request)
 	if err != nil {
@@ -1104,6 +1107,9 @@ func calculateConditionLevel(condition string) (string, error) {
 // GET /api/trend
 // ISUの性格毎の最新のコンディション情報
 func getTrend(c echo.Context) error {
+	if trend, found := trendCache.Get(1); found {
+		return c.JSON(http.StatusOK, trend)
+	}
 	characterList := []Isu{}
 	err := db.Select(&characterList, "SELECT `character` FROM `isu` GROUP BY `character`")
 	if err != nil {
@@ -1184,6 +1190,7 @@ func getTrend(c echo.Context) error {
 			})
 	}
 
+	trendCache.Set(1, res, time.Millisecond*700)
 	return c.JSON(http.StatusOK, res)
 }
 
