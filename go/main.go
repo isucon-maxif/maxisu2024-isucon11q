@@ -1124,18 +1124,23 @@ func getTrend(c echo.Context) error {
 		return c.NoContent(http.StatusInternalServerError)
 	}
 
-	res := []TrendResponse{}
+	// Get all isu
+	allIsuList := []Isu{}
+	err = db.Select(&allIsuList, "SELECT * FROM `isu`")
+	if err != nil {
+		c.Logger().Errorf("db error: %v", err)
+		return c.NoContent(http.StatusInternalServerError)
+	}
 
+	// character <-> isu
+	characterToIsuMap := make(map[string][]Isu)
+	for _, isu := range allIsuList {
+		characterToIsuMap[isu.Character] = append(characterToIsuMap[isu.Character], isu)
+	}
+
+	res := []TrendResponse{}
 	for _, character := range characterList {
-		isuList := []Isu{}
-		err = db.Select(&isuList,
-			"SELECT * FROM `isu` WHERE `character` = ?",
-			character,
-		)
-		if err != nil {
-			c.Logger().Errorf("db error: %v", err)
-			return c.NoContent(http.StatusInternalServerError)
-		}
+		isuList := characterToIsuMap[character]
 
 		characterInfoIsuConditions := []*TrendCondition{}
 		characterWarningIsuConditions := []*TrendCondition{}
