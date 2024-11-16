@@ -1143,7 +1143,7 @@ func getTrend(c echo.Context) error {
 		for _, isu := range isuList {
 			conditions := []IsuCondition{}
 			err = db.Select(&conditions,
-				"SELECT * FROM `isu_condition` WHERE `jia_isu_uuid` = ? ORDER BY timestamp DESC",
+				"SELECT * FROM `isu_condition` WHERE `jia_isu_uuid` = ? ORDER BY timestamp DESC LIMIT 1",
 				isu.JIAIsuUUID,
 			)
 			if err != nil {
@@ -1172,6 +1172,11 @@ func getTrend(c echo.Context) error {
 				}
 			}
 
+		}
+
+		jia_isu_uuids := make([]string, 0, len(isuList))
+		for _, isu := range isuList {
+			jia_isu_uuids = append(jia_isu_uuids, isu.JIAIsuUUID)
 		}
 
 		sort.Slice(characterInfoIsuConditions, func(i, j int) bool {
