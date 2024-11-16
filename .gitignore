@@ -1,0 +1,12 @@
+/sql/1_InitData.sql
+*.pprof
+.env
+*.pprof
+.env
+ec256-public.pem
+nodejs/
+perl/
+php/
+python/
+ruby/
+rust/
